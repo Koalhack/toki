@@ -28,6 +28,7 @@ type model struct {
 	start           time.Time
 	timer           timer.Model
 	progress        progress.Model
+	repeat          int
 	quitting        bool
 	interrupting    bool
 }
@@ -64,12 +65,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 
 	case timer.TimeoutMsg:
-		if m.state == len(m.durations)-1 {
-			m.quitting = true
-			return m, tea.Quit
-		}
 
-		m.state++
+		if m.state == len(m.durations)-1 {
+			if m.repeat == 0 {
+				m.quitting = true
+				return m, tea.Quit
+			} else if m.repeat > 0 {
+				m.repeat--
+			}
+			m.state = 0
+		} else {
+			m.state++
+		}
 
 		m.start = time.Now()
 		m.passed = 0
@@ -128,6 +135,7 @@ func (m model) View() string {
 
 var (
 	name            string
+	repeat          int
 	altscreen       bool
 	startTimeFormat string
 	winHeight       int
@@ -168,12 +176,14 @@ var rootCmd = &cobra.Command{
 			opts = append(opts, tea.WithAltScreen())
 		}
 		interval := timerInterval(durations[0])
+		repeat-- // remove one because will be launched once on start
 		m, err := tea.NewProgram(model{
 			durations:       durations,
 			state:           0,
 			timer:           timer.New(durations[0], timer.WithInterval(interval)),
 			progress:        progress.New(progress.WithDefaultGradient()),
 			name:            name,
+			repeat:          repeat,
 			altscreen:       altscreen,
 			startTimeFormat: startTimeFormat,
 			start:           time.Now(),
@@ -212,6 +222,7 @@ var manCmd = &cobra.Command{
 
 func init() {
 	rootCmd.Flags().StringVarP(&name, "name", "n", "", "timer name(s)")
+	rootCmd.Flags().IntVarP(&repeat, "repeat", "r", 1, "timer repeat number (-1 for infinite)")
 	rootCmd.Flags().BoolVarP(&altscreen, "fullscreen", "f", false, "fullscreen")
 	rootCmd.Flags().StringVarP(&startTimeFormat, "format", "", "", "Specify start time format, possible values: 24h, kitchen")
 
