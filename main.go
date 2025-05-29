@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -21,7 +22,8 @@ type model struct {
 	name            string
 	altscreen       bool
 	startTimeFormat string
-	duration        time.Duration
+	durations       []time.Duration
+	state           int
 	passed          time.Duration
 	start           time.Time
 	timer           timer.Model
@@ -41,7 +43,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 
 		m.passed += m.timer.Interval
-		pct := m.passed.Milliseconds() * 100 / m.duration.Milliseconds()
+		pct := m.passed.Milliseconds() * 100 / m.durations[m.state].Milliseconds()
 		cmds = append(cmds, m.progress.SetPercent(float64(pct)/100))
 
 		m.timer, cmd = m.timer.Update(msg)
@@ -62,8 +64,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 
 	case timer.TimeoutMsg:
-		m.quitting = true
-		return m, tea.Quit
+		if m.state == len(m.durations)-1 {
+			m.quitting = true
+			return m, tea.Quit
+		}
+
+		m.state++
+
+		m.start = time.Now()
+		m.passed = 0
+
+		interval := timerInterval(m.durations[m.state])
+		m.timer = timer.New(m.durations[m.state], timer.WithInterval(interval))
+
+		return m, m.timer.Start()
 
 	case progress.FrameMsg:
 		var cmd tea.Cmd
@@ -100,7 +114,7 @@ func (m model) View() string {
 	if m.name != "" {
 		result += ": " + italicStyle.Render(m.name)
 	}
-	endTime := m.start.Add(m.duration)
+	endTime := m.start.Add(m.durations[m.state])
 	result += " - " + boldStyle.Render(endTime.Format(startTimeFormat)) +
 		" - " + boldStyle.Render(m.timer.View()) +
 		"\n" + m.progress.View()
@@ -137,22 +151,27 @@ var rootCmd = &cobra.Command{
 	SilenceUsage: true,
 	Args:         cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		addSuffixIfArgIsNumber(&(args[0]), "s")
-		duration, err := time.ParseDuration(args[0])
-		if err != nil {
-			return err
+		timerStringArray := splitTimerArgString(args[0])
+
+		var durations []time.Duration
+		for index, item := range timerStringArray {
+			timerStringArray[index] = addSuffixIfArgIsNumber(item, "s")
+
+			duration, err := time.ParseDuration(timerStringArray[index])
+			if err != nil {
+				return err
+			}
+			durations = append(durations, duration)
 		}
 		var opts []tea.ProgramOption
 		if altscreen {
 			opts = append(opts, tea.WithAltScreen())
 		}
-		interval := time.Second
-		if duration < time.Minute {
-			interval = 100 * time.Millisecond
-		}
+		interval := timerInterval(durations[0])
 		m, err := tea.NewProgram(model{
-			duration:        duration,
-			timer:           timer.New(duration, timer.WithInterval(interval)),
+			durations:       durations,
+			state:           0,
+			timer:           timer.New(durations[0], timer.WithInterval(interval)),
 			progress:        progress.New(progress.WithDefaultGradient()),
 			name:            name,
 			altscreen:       altscreen,
@@ -192,7 +211,7 @@ var manCmd = &cobra.Command{
 }
 
 func init() {
-	rootCmd.Flags().StringVarP(&name, "name", "n", "", "timer name")
+	rootCmd.Flags().StringVarP(&name, "name", "n", "", "timer name(s)")
 	rootCmd.Flags().BoolVarP(&altscreen, "fullscreen", "f", false, "fullscreen")
 	rootCmd.Flags().StringVarP(&startTimeFormat, "format", "", "", "Specify start time format, possible values: 24h, kitchen")
 
@@ -205,9 +224,25 @@ func main() {
 	}
 }
 
-func addSuffixIfArgIsNumber(s *string, suffix string) {
-	_, err := strconv.ParseFloat(*s, 64)
-	if err == nil {
-		*s = *s + suffix
+func timerInterval(d time.Duration) time.Duration {
+	if d < time.Minute {
+		return 100 * time.Millisecond
 	}
+
+	return time.Second
+}
+
+func addSuffixIfArgIsNumber(s string, suffix string) string {
+	_, err := strconv.ParseFloat(s, 64)
+	if err == nil {
+		s = s + suffix
+		return s
+	}
+	return s
+}
+
+func splitTimerArgString(s string) []string {
+	const TIMER_ARG_SEP = "\\s*[\\s,-]\\s*"
+	array := regexp.MustCompile(TIMER_ARG_SEP).Split(s, -1)
+	return array
 }
